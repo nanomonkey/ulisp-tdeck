@@ -5,7 +5,7 @@
 */
 
 // Lisp Library
-const char LispLibrary[] PROGMEM = "";
+//const char LispLibrary[] PROGMEM = "";
 
 // Compile options
 
@@ -20,7 +20,7 @@ const char LispLibrary[] PROGMEM = "";
 
 // Includes
 
-// #include "LispLibrary.h"
+#include "LispLibrary.h"
 #include <setjmp.h>
 #include <SPI.h>
 #include <Wire.h>
