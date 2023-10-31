@@ -28,6 +28,11 @@
 #include <WiFi.h>
 #include "soc/periph_defs.h" // Not sure why necessary
 #include <I2S.h>
+#include "es7210.h"
+#include <Audio.h>
+//#include <driver/i2s.h>
+
+#define I2S_CH      I2S_NUM_1
 
 #define COLOR_WHITE 0xFFFF
 #define COLOR_BLACK 0x0000
@@ -55,28 +60,29 @@
 #define TFT_BACKLITE TDECK_TFT_BACKLIGHT
 #include <TFT_eSPI.h>
 TFT_eSPI        tft;
+Audio           audio;
 
 
 
-// #define TDECK_I2S_WS        5
-// #define TDECK_I2S_BCK       7
-// #define TDECK_I2S_DOUT      6
-// #define TDECK_I2C_SDA       18
-// #define TDECK_I2C_SCL       8
-// #define TDECK_BAT_ADC       4
-// #define TDECK_TOUCH_INT     16
-// #define TDECK_KEYTDECK_INT  46
-// #define TDECK_TFT_DC        11
-// #define TDECK_TFT_BACKLIGHT 42
-// #define TDECK_TBOX_G02      2
-// #define TDECK_TBOX_G01      3
-// #define TDECK_TBOX_G04      1
-// #define TDECK_TBOX_G03      15
-// #define TDECK_ES7210_MCLK   48
-// #define TDECK_ES7210_LRCK   21
-// #define TDECK_ES7210_SCK    47
-// #define TDECK_ES7210_DIN    14
-// #define TDECK_BOOT_PIN      0
+#define TDECK_I2S_WS        5
+#define TDECK_I2S_BCK       7
+#define TDECK_I2S_DOUT      6
+#define TDECK_I2C_SDA       18
+#define TDECK_I2C_SCL       8
+#define TDECK_BAT_ADC       4
+#define TDECK_TOUCH_INT     16
+#define TDECK_KEYTDECK_INT  46
+#define TDECK_TFT_DC        11
+#define TDECK_TFT_BACKLIGHT 42
+#define TDECK_TBOX_G02      2
+#define TDECK_TBOX_G01      3
+#define TDECK_TBOX_G04      1
+#define TDECK_TBOX_G03      15
+#define TDECK_ES7210_MCLK   48
+#define TDECK_ES7210_LRCK   21
+#define TDECK_ES7210_SCK    47
+#define TDECK_ES7210_DIN    14
+#define TDECK_BOOT_PIN      0
 
 
 #if defined(sdcardsupport)
@@ -157,9 +163,9 @@ const char i2cstream[] PROGMEM = "i2c";
 const char spistream[] PROGMEM = "spi";
 const char sdstream[] PROGMEM = "sd";
 const char wifistream[] PROGMEM = "wifi";
-const char stringstream[] PROGMEM = "string";
+const char string_stream[] PROGMEM = "string";
 const char gfxstream[] PROGMEM = "gfx";
-PGM_P const streamname[] PROGMEM = {serialstream, i2cstream, spistream, sdstream, wifistream, stringstream, gfxstream};
+PGM_P const streamname[] PROGMEM = {serialstream, i2cstream, spistream, sdstream, wifistream, string_stream, gfxstream};
 
 // Typedefs
 
@@ -1912,6 +1918,18 @@ void nonote (int pin) {
   noTone(pin);
 }
 
+void playmp3 (char *filepath, int volume){
+  if (SD.exists (filepath)) {
+    audio.setPinout(TDECK_I2S_BCK, TDECK_I2S_WS, TDECK_I2S_DOUT);
+    audio.setVolume(volume);
+    audio.connecttoFS(SD, filepath);
+    Serial.printf("play %s\r\n", filepath);
+    while (audio.isRunning()) {
+      audio.loop();
+    }
+    //audio.stopSong();
+  }
+}
 // Sleep
 
 void initsleep () { }
@@ -3855,6 +3873,20 @@ object *fn_note (object *args, object *env) {
     }
     playnote(pin, note, octave, duration);
   } else nonote(pin);
+  return nil;
+}
+
+object *fn_mp3 (object *args, object *env) {
+  (void) env;
+  if (args != NULL) {
+    object *filename = eval(first(args), env);
+    if (!stringp(filename)) error(PSTR("filename is not a string"), filename);
+    args = cdr(args);
+    static int volume = 12;
+    if (args != NULL) volume = checkinteger(eval(first(args), env));
+    char buffer[BUFFERSIZE];
+    playmp3(MakeFilename(filename, buffer), volume);
+  }
   return nil;
 }
 
@@ -6451,6 +6483,37 @@ void initBoard () {
   digitalWrite(TDECK_TFT_CS, HIGH);
   pinMode(TDECK_SPI_MISO, INPUT_PULLUP);
   SPI.begin(TDECK_SPI_SCK, TDECK_SPI_MISO, TDECK_SPI_MOSI); //SD
+  /*
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_ALL_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 8,
+    .dma_buf_len = 64,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0,
+    .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+    .bits_per_chan = I2S_BITS_PER_CHAN_16BIT,
+    .chan_mask =
+    (i2s_channel_t)(I2S_TDM_ACTIVE_CH0 | I2S_TDM_ACTIVE_CH1 |
+                    I2S_TDM_ACTIVE_CH2 | I2S_TDM_ACTIVE_CH3),
+    .total_chan = 4,
+  };
+  
+  i2s_pin_config_t pin_config = {
+    .mck_io_num = TDECK_ES7210_MCLK,
+    .bck_io_num = TDECK_ES7210_SCK,
+    .ws_io_num = TDECK_ES7210_LRCK,
+    .data_in_num = TDECK_ES7210_DIN,
+  };
+  i2s_driver_install(I2S_CH, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_CH, &pin_config);
+  i2s_zero_dma_buffer(I2S_CH);
+  */
 }
 
 void sd_begin () {
