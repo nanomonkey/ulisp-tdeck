@@ -112,15 +112,16 @@ object *fn_remove_dir(object *args, object *env) {
 
 object *fn_list_dir(object *arg, object *env) {
   (void) env;
+  if (arg != NULL) arg = eval(first(arg), env);
   #if defined(sdcardsupport)
   sd_begin();
   File root;
   if (stringp(arg)) {
     char buffer[BUFFERSIZE];
     root = SD.open(MakeFilename(arg, buffer));
-  } else {
+  } else if(arg == NULL) {
     root = SD.open("/");
-  }
+  } else error(invalidarg, arg);
   if(!root){
     error2(PSTR("Failed to open directory"));
     return nil;
@@ -143,13 +144,12 @@ object *fn_list_dir(object *arg, object *env) {
   #endif
 }
 
-object *fn_directoryp(object *args, object *env) {
+object *fn_directoryp(object *arg, object *env) {
   (void) env;
   #if defined(sdcardsupport)
   sd_begin();
-  object *dirname = first(args);
   char buffer[BUFFERSIZE];
-  File file = SD.open(MakeFilename(dirname, buffer));
+  File file = SD.open(MakeFilename(arg, buffer));
   if(!file){
     error2(PSTR("Failed to find directory"));
     return nil;
