@@ -1,186 +1,110 @@
-// ListLibrary.h - Version 1 - 8th February 2021
+// ListLibrary.h 
 
-const char LispLibrary[] PROGMEM =
+// T-Deck Lisp Editor - Version 2 - 4th November 2023
 
-// count
-// Counts the number of items eq to x in lst.
+const char LispLibrary[] PROGMEM = R"lisplibrary(
 
-"(defun count (x lst)"
-"  (if (null lst) 0"
-"    (+ (if (eq x (car lst)) 1 0) (count x (cdr lst)))))"
+(defvar *cmds* nil)
+(defvar *atomic-cmds* nil)
+(defvar *binary-cmds* nil)
 
-// count-if
-// Counts the number of items in lst for which tst is true.
+(defun %edit (fun)
+  (let ((cmd (car *cmds*)))
+    (cond
+     ((null *cmds*) fun)
+     ((eq cmd #\h) (pop *cmds*) (%edit (cons 'highlight (list fun))))
+     ((consp cmd) (funcall (cdr (assoc (car cmd) *binary-cmds*)) (cdr cmd) fun))
+     ((assoc cmd *atomic-cmds*) (funcall (cdr (assoc cmd *atomic-cmds*)) fun))
+     (t fun))))
 
-"(defun count-if (tst lst)"
-"  (if (null lst) 0"
-"    (+ (if (funcall tst (car lst)) 1 0) (count-if tst (cdr lst)))))"
+(defun butlast (lst) (subseq lst 0 (1- (length lst))))
 
-// count-if-not
-// Counts the number of items in lst for which tst is false.
+(defun edit (name)
+  (let ((fun (eval name))
+        cc)
+    (setq *cmds* nil)
+    (loop
+     (write-byte 12)
+     (setq cc (append cc (list #\h)))
+     (setq *cmds* cc)
+     (pprint (%edit fun))
+     (setq cc (butlast cc))
+     (let ((c (get-key)))
+       (cond
+         ((eq c #\q) (return name))
+         ((eq c #\s) (setq *cmds* cc) (set name (%edit fun)) (return name))
+         ((assoc c *binary-cmds*)
+          (write-byte 11) (princ c) (princ #\:)
+          (setq cc (append cc (list (cons c (read))))))
+         ((assoc c *atomic-cmds*) (setq cc (append cc (list c))))
+         (t (write-byte 7)))))))
 
-"(defun count-if-not (tst lst)"
-"  (if (null lst) 0"
-"    (+ (if (funcall tst (car lst)) 0 1) (count-if-not tst (cdr lst)))))"
+(defun define-atomic-cmd (char name cmd) (push (cons char cmd) *atomic-cmds*))
 
-// eql
-// In uLisp eq and eql are equivalent.
+(defun define-binary-cmd (char name cmd) (push (cons char cmd) *binary-cmds*))
 
-"(defvar eql eq)"
+(define-atomic-cmd #\b "back"
+  #'(lambda (fun) (pop *cmds*) fun))
 
-// equal
-// Tests whether two objects or strings are equal, or have the same list structure.
+(define-atomic-cmd #\d "cdr"
+  #'(lambda (fun) (pop *cmds*) (if (atom fun) (%edit fun) (%edit (cons (car fun) (%edit (cdr fun)))))))
 
-"(defun equal (x y)"
-"  (cond"
-"   ((and (stringp x) (stringp y)) (string= x y))"
-"   ((and (consp x) (consp y)) (and (equal (car x) (car y)) (equal (cdr x) (cdr y))))"
-"   (t (eq x y))))"
+(define-atomic-cmd #\a "car"
+  #'(lambda (fun) (pop *cmds*) (if (atom fun) (%edit fun) (%edit (cons (%edit (car fun)) (cdr fun))))))
 
-// every
-// Returns t if tst is true for every item in lst, or returns nil on the first false item.
+(define-atomic-cmd #\x "delete"
+  #'(lambda (fun) (pop *cmds*) (if (atom fun) (%edit fun) (%edit (cdr fun)))))
 
-"(defun every (tst lst)"
-"  (if (null lst) t"
-"    (and (funcall tst (car lst)) (every tst (cdr lst)))))"
+(define-binary-cmd #\r "replace"
+  #'(lambda (val fun) (pop *cmds*) (if (atom fun) (%edit val) (%edit fun))))
 
-// find
-// Returns x if x is in lst, or nil otherwise.
+(define-binary-cmd #\c "cons"
+  #'(lambda (val fun) (pop *cmds*) (%edit (cons val fun))))
 
-"(defun find (x lst) (car (member x lst)))"
+(define-binary-cmd #\i "insert"
+  #'(lambda (val fun) (pop *cmds*) (%edit (cons val fun))))
 
-// find-if
-// Returns the first item for which tst is true in lst, or nil otherwise.
+(define-binary-cmd #\f "find"
+  #'(lambda (val fun)
+      (cond
+       ((null fun) nil)
+       ((equal val fun) (pop *cmds*) (%edit fun))
+       ((atom fun) fun)
+       (t (cons (%edit (car fun)) (%edit (cdr fun)))))))
 
-"(defun find-if (tst lst)"
-"  (cond"
-"   ((null lst) nil)"
-"   ((funcall tst (car lst)) (car lst))"
-"   (t (find-if tst (cdr lst)))))"
+(defun load-package (filename)
+  (with-sd-card (str filename)
+    (loop
+     (let (ln (eval (read str)))
+       (unless ln (return nothing))))))
 
-// find-if-not
-// Returns the first item for which tst is false in lst, or nil otherwise.
+(defun save-package (filename lst)
+  (with-sd-card (str filename 2)
+   (dolist (f lst)
+      (symbol-def f str))))
 
-"(defun find-if-not (tst lst)"
-"  (cond"
-"   ((null lst) nil)"
-"   ((not (funcall tst (car lst))) (car lst))"
-"   (t (find-if-not tst (cdr lst)))))"
+(defun add-to-package (filename list)
+   (with-sd-card (str filename 1)
+     (dolist (f lst)
+         (symbol-def f str))))
 
-// fourth
-// Returns the fourth item in a list.
+(defun lister (filename)
+  (with-sd-card (str filename)
+    (loop
+     (let ((ln (read-line str)))
+       (unless ln (return nothing))
+       (princ ln)
+       (terpri)))))
 
-"(defun fourth (lst) (car (cdddr lst)))"
-
-// identity
-// Simply returns its argument.
-
-"(defun identity (x) x)"
-
-// last
-// Returns the last cdr of lst.
-
-"(defun last (lst)"
-" (if (null (cdr lst)) lst"
-"   (last (cdr lst))))"
-
-// mapl
-// Applies fn to successive cdrs of lst, and returns lst.
-
-"(defun mapl (fn lst)"
-"  (mapl2 fn lst)"
-"  lst)"
-
-"(defun mapl2 (fn lst)"
-"  (cond"
-"   ((null lst) nil)"
-"   (t (funcall fn lst)"
-"      (mapl2 fn (cdr lst)))))"
-
-// maplist
-// Applies fn to successive cdrs of lst, and returns a list of the results.
-
-"(defun maplist (fn lst)"
-"  (if (null lst) nil"
-"   (cons (funcall fn lst) (maplist fn (cdr lst)))))"
-
-// nconc
-// Destructively appends its arguments together, which must be lists.
-
-"(defun nconc (&rest ls)"
-"  (mapcan #'(lambda (x) x) ls))"
-
-// nthcdr
-// Returns the nth cdr of lst.
-
-"(defun nthcdr (n lst)"
-"  (if (zerop n) lst"
-"    (nthcdr (1- n) (cdr lst))))"
-
-// position
-// Returns the position of the first x in lst, or nil if it's not found.
-
-"(defun position (x lst &optional (n 0))"
-"  (cond"
-"   ((null lst) nil)"
-"   ((eq x (car lst)) n)"
-"   (t (position x (cdr lst) (1+ n)))))"
-
-// position-if
-// Returns the position of the first item in lst for which tst is true, or nil if none is found.
-
-"(defun position-if (tst lst &optional (n 0))"
-"  (cond"
-"   ((null lst) nil)"
-"   ((funcall tst (car lst)) n)"
-"   (t (position-if tst (cdr lst) (1+ n)))))"
-
-// position-if-not
-// Returns the position of the first item in lst for which tst is false, or nil if none is found.
-
-"(defun position-if-not (tst lst &optional (n 0))"
-"  (cond"
-"   ((null lst) nil)"
-"   ((not (funcall tst (car lst))) n)"
-"   (t (position-if-not tst (cdr lst) (1+ n)))))"
-
-// reduce
-// Returns the result of applying fn to successive pairs of items from lst.
-
-"(defun reduce (fn lst)"
-"  (if (null (cdr lst)) (car lst)"
-"    (funcall fn (car lst) (reduce fn (cdr lst)))))"
-
-// remove
-// Removes all occurrences of x from lst.
-
-"(defun remove (x lst)"
-"  (mapcan #'(lambda (y) (unless (eq x y) (list y))) lst))"
-
-// remove-if
-// Removes all items from lst for which tst is true.
-
-"(defun remove-if (tst lst)"
-"  (mapcan #'(lambda (x) (unless (funcall tst x) (list x))) lst))"
-
-// remove-if-not
-// Removes all items from lst for which tst is false.
-
-"(defun remove-if-not (tst lst)"
-"  (mapcan #'(lambda (x) (when (funcall tst x) (list x))) lst))"
-
-// subseq (for lists)
-// Returns the subsequence of lst from item n to item m-1.
-
-"(defun subseq* (lst n m)"
-"  (cond"
-"   ((> n 0) (subseq* (cdr lst) (1- n) (1- m)))"
-"   ((zerop m) nil)"
-"   (t (cons (car lst) (subseq* (cdr lst) 0 (1- m))))))"
-
-// third
-// Returns the third item in a list.
-
-"(defvar third caddr)"
-
-;
+(defun lisp-server (ipstring)
+  (let ((println #'(lambda (x s) (format s "~a~a~%" x #\return))))
+    (with-client (s ipstring 8080)
+      (print "Listening...")
+      (loop
+       (unless (= 0 (available s))
+         (let* ((line (read-line s))
+                (result (ignore-errors (eval (read-from-string line)))))
+           (print line)
+           (println (if (eq result nothing) "Error!" result) s)))
+       (delay 1000)))))
+)lisplibrary";

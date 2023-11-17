@@ -46,7 +46,7 @@ ifndef BOARD
   stop
 endif
 
-MAIN=$(shell ls *.ino)
+MAIN=ulisp-tdeck.ino  #$(shell ls *.ino)
 
 BAUD=921600
 FLASH_BIN=firmware-$(BOARD).bin

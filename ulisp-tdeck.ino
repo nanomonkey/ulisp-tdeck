@@ -1,5 +1,5 @@
-/* uLisp T-Deck Release 3 - www.ulisp.com
-   David Johnson-Davies - www.technoblogy.com - 3rd October 2023
+/* uLisp T-Deck Release 5 - www.ulisp.com
+   David Johnson-Davies - www.technoblogy.com - 28th October 2023
 
    Licensed under the MIT license: https://opensource.org/licenses/MIT
 */
@@ -15,8 +15,8 @@
 // #define printgcs
 #define sdcardsupport
 #define gfxsupport
-// #define lisplibrary
-// #define extensions
+#define lisplibrary
+#define extensions
 
 // Includes
 
@@ -28,11 +28,7 @@
 #include <WiFi.h>
 #include "soc/periph_defs.h" // Not sure why necessary
 #include <I2S.h>
-#include "es7210.h"
-#include <Audio.h>
-//#include <driver/i2s.h>
-
-#define I2S_CH      I2S_NUM_1
+#include <TFT_eSPI.h>
 
 #define COLOR_WHITE 0xFFFF
 #define COLOR_BLACK 0x0000
@@ -45,45 +41,14 @@
 #define TDECK_TFT_DC 11
 #define TDECK_TFT_BACKLIGHT 42
 #define TDECK_SDCARD_CS 39
-#define TDECK_I2C_SDA       18
-#define TDECK_I2C_SCL       8
-
-
-#define TDECK_LORA_BUSY     13
-#define TDECK_LORA_RST      17
-#define TDECK_LORA_DIO1     45
-
-#define TDECK_LORA_CS        9
-
-#include <Arduino_GFX_Library.h>
+#define TDECK_I2C_SDA 18
+#define TDECK_I2C_SCL 8
+#define TDECK_LORA_CS 9
+#define TDECK_KEYBOARD_INT 46
 #define GFX_DEV_DEVICE LILYGO_T_DECK
 #define TFT_BACKLITE TDECK_TFT_BACKLIGHT
-#include <TFT_eSPI.h>
-TFT_eSPI        tft;
-Audio           audio;
 
-
-
-#define TDECK_I2S_WS        5
-#define TDECK_I2S_BCK       7
-#define TDECK_I2S_DOUT      6
-#define TDECK_I2C_SDA       18
-#define TDECK_I2C_SCL       8
-#define TDECK_BAT_ADC       4
-#define TDECK_TOUCH_INT     16
-#define TDECK_KEYTDECK_INT  46
-#define TDECK_TFT_DC        11
-#define TDECK_TFT_BACKLIGHT 42
-#define TDECK_TBOX_G02      2
-#define TDECK_TBOX_G01      3
-#define TDECK_TBOX_G04      1
-#define TDECK_TBOX_G03      15
-#define TDECK_ES7210_MCLK   48
-#define TDECK_ES7210_LRCK   21
-#define TDECK_ES7210_SCK    47
-#define TDECK_ES7210_DIN    14
-#define TDECK_BOOT_PIN      0
-
+TFT_eSPI tft;
 
 #if defined(sdcardsupport)
   #include <SD.h>
@@ -102,8 +67,6 @@ Audio           audio;
   #define LITTLEFS
   #include <LittleFS.h>
   #define SDCARD_SS_PIN 39
-  #define LED_BUILTIN 13
-
 #else
 #error "Board not supported!"
 #endif
@@ -163,9 +126,9 @@ const char i2cstream[] PROGMEM = "i2c";
 const char spistream[] PROGMEM = "spi";
 const char sdstream[] PROGMEM = "sd";
 const char wifistream[] PROGMEM = "wifi";
-const char string_stream[] PROGMEM = "string";
+const char stringstream[] PROGMEM = "string";
 const char gfxstream[] PROGMEM = "gfx";
-PGM_P const streamname[] PROGMEM = {serialstream, i2cstream, spistream, sdstream, wifistream, string_stream, gfxstream};
+PGM_P const streamname[] PROGMEM = {serialstream, i2cstream, spistream, sdstream, wifistream, stringstream, gfxstream};
 
 // Typedefs
 
@@ -206,7 +169,7 @@ typedef uint16_t builtin_t;
 
 enum builtins: builtin_t { NIL, TEE, NOTHING, OPTIONAL, INITIALELEMENT, ELEMENTTYPE, BIT, AMPREST, LAMBDA, LET, LETSTAR,
 CLOSURE, PSTAR, QUOTE, DEFUN, DEFVAR, CAR, FIRST, CDR, REST, NTH, AREF, STRINGFN, PINMODE, DIGITALWRITE,
-ANALOGREAD, REGISTER, FORMAT, 
+ANALOGREAD, REGISTER, FORMAT, HIGHLIGHT,
  };
 
 // Global variables
@@ -594,8 +557,7 @@ int EpromReadInt (int *addr) {
 
 unsigned int saveimage (object *arg) {
 #if defined(sdcardsupport)
-
-  unsigned int imagesize = compactimage(&arg);
+  unsigned int imagesize = compactimage(&arg); 
   sd_begin();
   File file;
   if (stringp(arg)) {
@@ -1918,18 +1880,6 @@ void nonote (int pin) {
   noTone(pin);
 }
 
-void playmp3 (char *filepath, int volume){
-  if (SD.exists (filepath)) {
-    audio.setPinout(TDECK_I2S_BCK, TDECK_I2S_WS, TDECK_I2S_DOUT);
-    audio.setVolume(volume);
-    audio.connecttoFS(SD, filepath);
-    Serial.printf("play %s\r\n", filepath);
-    while (audio.isRunning()) {
-      audio.loop();
-    }
-    //audio.stopSong();
-  }
-}
 // Sleep
 
 void initsleep () { }
@@ -1981,40 +1931,61 @@ int subwidthlist (object *form, int w) {
   return w;
 }
 
-void superprint (object *form, int lm, pfun_t pfun) {
+bool highlighted (object *obj) {
+  return (consp(obj) && car(obj) != NULL && car(obj)->name == sym(HIGHLIGHT));
+}
+
+const char STX = 2; // Code to invert text
+const char ETX = 3; // Code to invert text
+
+void superprint (object *form, int lm, bool match, pfun_t pfun) {
   if (atom(form)) {
     if (symbolp(form) && form->name == sym(NOTHING)) printsymbol(form, pfun);
     else printobject(form, pfun);
   } else if (quoted(form)) {
     pfun('\'');
-    superprint(car(cdr(form)), lm + 1, pfun);
+    superprint(car(cdr(form)), lm + 1, match, pfun);
+  } else if (highlighted(form)) {
+    pfun(STX);
+    superprint(car(cdr(form)), lm, true, pfun);
+    pfun(ETX);
   } else {
     lm = lm + PPINDENT;
-    bool super = (subwidth(form, PPWIDTH - lm - PPINDENT) < 0);
-    int special = 0, extra = 0; bool separate = true;
+    bool fits = (subwidth(form, PPWIDTH - lm - PPINDENT) >= 0);
+    int special = 0; bool separate = true, hilite = false;
     object *arg = car(form);
     if (symbolp(arg) && builtinp(arg->name)) {
       uint8_t minmax = getminmax(builtin(arg->name));
       if (minmax == 0327 || minmax == 0313) special = 2; // defun, setq, setf, defvar
       else if (minmax == 0317 || minmax == 0017 || minmax == 0117 || minmax == 0123) special = 1;
-      else if (minmax == 0027) { extra = 2; special = 1; } // let
-      else if (minmax == 0037) { extra = 3; special = 1; } // let*
     }
     while (form != NULL) {
       if (atom(form)) { pfstring(PSTR(" . "), pfun); printobject(form, pfun); pfun(')'); return; }
-      else if (separate) { 
+      object *arg = car(form);
+      if (symbolp(arg) && arg->name == sym(HIGHLIGHT)) {
+        hilite = true;
+        form = car(cdr(form));
+      }
+      if (separate) { 
         pfun('(');
         separate = false;
-      } else if (special) {
-        pfun(' ');
+      } else if (special != 0) {
+        if (hilite) pfun(' ' | 0x80); else pfun(' ');
         special--; 
-      } else if (!super) {
-        pfun(' ');
-      } else { pln(pfun); indent(lm, ' ', pfun); }
-      superprint(car(form), lm+extra, pfun);
-      form = cdr(form);
+      } else if (fits) {
+        if (hilite) pfun(' ' | 0x80); else pfun(' ');
+      } else {
+        pln(pfun);
+        if (match) pfun(ETX);
+        indent(lm-1, ' ', pfun);
+        if (hilite) pfun(' ' | 0x80); else pfun(' ');
+        if (match) pfun(STX);
+      }
+      hilite = false;
+      if (form != NULL) { superprint(car(form), lm, match, pfun); form = cdr(form); }
     }
     pfun(')');
+    if (!match) pfun(ETX);
   }
 }
 
@@ -2025,7 +1996,7 @@ object *edit (object *fun) {
     if (c == 'q') setflag(EXITEDITOR);
     else if (c == 'b') return fun;
     else if (c == 'r') fun = read(gserial);
-    else if (c == '\n') { pfl(pserial); superprint(fun, 0, pserial); pln(pserial); }
+    else if (c == '\n') { pfl(pserial); superprint(fun, 0, false, pserial); pln(pserial); }
     else if (c == 'c') fun = cons(read(gserial), fun);
     else if (atom(fun)) pserial('!');
     else if (c == 'd') fun = cons(car(fun), edit(cdr(fun)));
@@ -2105,12 +2076,6 @@ object *sp_loop (object *args, object *env) {
   }
 }
 
-object *sp_return (object *args, object *env) {
-  object *result = eval(tf_progn(args,env), env);
-  setflag(RETURNFLAG);
-  return result;
-}
-
 object *sp_push (object *args, object *env) {
   int bit;
   checkargs(args);
@@ -2123,7 +2088,10 @@ object *sp_push (object *args, object *env) {
 object *sp_pop (object *args, object *env) {
   int bit;
   checkargs(args);
-  object **loc = place(first(args), env, &bit);
+  object *arg = first(args);
+  if (arg == NULL) error(invalidarg, arg);
+  object **loc = place(arg, env, &bit);
+  if (!consp(*loc)) error(notalist, *loc);
   object *result = car(*loc);
   pop(*loc);
   return result;
@@ -2482,7 +2450,7 @@ object *sp_withsdcard (object *args, object *env) {
     SDpfile = SD.open(MakeFilename(filename, buffer), oflag);
     if (!SDpfile) error2(PSTR("problem writing to SD card or invalid filename"));
   } else {
-    char buffer[BUFFERSIZE];
+    char buffer[BUFFERSIZE]; 
     SDgfile = SD.open(MakeFilename(filename, buffer), oflag);
     if (!SDgfile) error2(PSTR("problem reading from SD card or invalid filename"));
   }
@@ -2526,7 +2494,7 @@ object *tf_progn (object *args, object *env) {
   object *more = cdr(args);
   while (more != NULL) {
     object *result = eval(car(args),env);
-    if (tstflag(RETURNFLAG)) return result;
+    if (tstflag(RETURNFLAG)) return quote(result);
     args = more;
     more = cdr(args);
   }
@@ -3580,6 +3548,12 @@ object *fn_eval (object *args, object *env) {
   return eval(first(args), env);
 }
 
+object *fn_return (object *args, object *env) {
+  (void) env;
+  setflag(RETURNFLAG);
+  if (args == NULL) return nil; else return first(args);
+}
+
 object *fn_globals (object *args, object *env) {
   (void) args, (void) env;
   object *result = cons(NULL, NULL);
@@ -3733,7 +3707,7 @@ object *fn_gc (object *obj, object *env) {
 
 object *fn_room (object *args, object *env) {
   (void) args, (void) env;
-  return number(Freespace);
+  return number(Freespace + 1);
 }
 
 object *fn_saveimage (object *args, object *env) {
@@ -3876,20 +3850,6 @@ object *fn_note (object *args, object *env) {
   return nil;
 }
 
-object *fn_mp3 (object *args, object *env) {
-  (void) env;
-  if (args != NULL) {
-    object *filename = eval(first(args), env);
-    if (!stringp(filename)) error(PSTR("filename is not a string"), filename);
-    args = cdr(args);
-    static int volume = 12;
-    if (args != NULL) volume = checkinteger(eval(first(args), env));
-    char buffer[BUFFERSIZE];
-    playmp3(MakeFilename(filename, buffer), volume);
-  }
-  return nil;
-}
-
 object *fn_register (object *args, object *env) {
   (void) env;
   object *arg = first(args);
@@ -3922,7 +3882,7 @@ object *fn_pprint (object *args, object *env) {
   if (pfun == gfxwrite) ppwidth = GFXPPWIDTH;
   #endif
   pln(pfun);
-  superprint(obj, 0, pfun);
+  superprint(obj, 0, false, pfun);
   ppwidth = PPWIDTH;
   return bsymbol(NOTHING);
 }
@@ -3940,9 +3900,9 @@ object *fn_pprintall (object *args, object *env) {
     object *val = cdr(pair);
     pln(pfun);
     if (consp(val) && symbolp(car(val)) && builtin(car(val)->name) == LAMBDA) {
-      superprint(cons(bsymbol(DEFUN), cons(var, cdr(val))), 0, pfun);
+      superprint(cons(bsymbol(DEFUN), cons(var, cdr(val))), 0, false, pfun);
     } else {
-      superprint(cons(bsymbol(DEFVAR), cons(var, cons(quote(val), NULL))), 0, pfun);
+      superprint(cons(bsymbol(DEFVAR), cons(var, cons(quote(val), NULL))), 0, false, pfun);
     }
     pln(pfun);
     testescape();
@@ -4099,76 +4059,7 @@ object *fn_aproposlist (object *args, object *env) {
   return apropos(first(args), false);
 }
 
-object *fn_pprintall (object *args, object *env) {
-  (void) env;
-  pfun_t pfun = pstreamfun(args);
-  #if defined(gfxsupport)
-  if (pfun == gfxwrite) ppwidth = GFXPPWIDTH;
-  #endif
-  object *globals = GlobalEnv;
-  while (globals != NULL) {
-    object *pair = first(globals);
-    object *var = car(pair);
-    object *val = cdr(pair);
-    pln(pfun);
-    if (consp(val) && symbolp(car(val)) && builtin(car(val)->name) == LAMBDA) {
-      superprint(cons(bsymbol(DEFUN), cons(var, cdr(val))), 0, pfun);
-    } else {
-      superprint(cons(bsymbol(DEFVAR), cons(var, cons(quote(val), NULL))), 0, pfun);
-    }
-    pln(pfun);
-    testescape();
-    globals = cdr(globals);
-  }
-  ppwidth = PPWIDTH;
-  return bsymbol(NOTHING);
-}object *fn_pprintall (object *args, object *env) {
-  (void) env;
-  pfun_t pfun = pstreamfun(args);
-  #if defined(gfxsupport)
-  if (pfun == gfxwrite) ppwidth = GFXPPWIDTH;
-  #endif
-  object *globals = GlobalEnv;
-  while (globals != NULL) {
-    object *pair = first(globals);
-    object *var = car(pair);
-    object *val = cdr(pair);
-    pln(pfun);
-    if (consp(val) && symbolp(car(val)) && builtin(car(val)->name) == LAMBDA) {
-      superprint(cons(bsymbol(DEFUN), cons(var, cdr(val))), 0, pfun);
-    } else {
-      superprint(cons(bsymbol(DEFVAR), cons(var, cons(quote(val), NULL))), 0, pfun);
-    }
-    pln(pfun);
-    testescape();
-    globals = cdr(globals);
-  }
-  ppwidth = PPWIDTH;
-  return bsymbol(NOTHING);
-}object *fn_pprintall (object *args, object *env) {
-  (void) env;
-  pfun_t pfun = pstreamfun(args);
-  #if defined(gfxsupport)
-  if (pfun == gfxwrite) ppwidth = GFXPPWIDTH;
-  #endif
-  object *globals = GlobalEnv;
-  while (globals != NULL) {
-    object *pair = first(globals);
-    object *var = car(pair);
-    object *val = cdr(pair);
-    pln(pfun);
-    if (consp(val) && symbolp(car(val)) && builtin(car(val)->name) == LAMBDA) {
-      superprint(cons(bsymbol(DEFUN), cons(var, cdr(val))), 0, pfun);
-    } else {
-      superprint(cons(bsymbol(DEFVAR), cons(var, cons(quote(val), NULL))), 0, pfun);
-    }
-    pln(pfun);
-    testescape();
-    globals = cdr(globals);
-  }
-  ppwidth = PPWIDTH;
-  return bsymbol(NOTHING);
-}// Error handling
+// Error handling
 
 object *sp_unwindprotect (object *args, object *env) {
   if (args == NULL) error2(toofewargs);
@@ -4570,6 +4461,23 @@ object *fn_invertdisplay (object *args, object *env) {
   return nil;
 }
 
+char getKey () {
+  char temp;
+  do {
+    Wire1.requestFrom(0x55, 1);
+    while (!Wire1.available());
+    temp = Wire1.read();
+  } while ((temp == 0) || (temp ==255));
+  if (temp == '@') temp = '~';
+  if (temp == '_') temp = '\\';
+  return temp;
+}
+
+object *fn_getkey (object *args, object *env) {
+  (void) env, (void) args;
+  return character(getKey());
+}
+
 // Built-in symbol names
 const char string0[] PROGMEM = "nil";
 const char string1[] PROGMEM = "t";
@@ -4599,6 +4507,7 @@ const char string24[] PROGMEM = "digitalwrite";
 const char string25[] PROGMEM = "analogread";
 const char string26[] PROGMEM = "register";
 const char string27[] PROGMEM = "format";
+const char string27a[] PROGMEM = "highlight";
 const char string28[] PROGMEM = "or";
 const char string29[] PROGMEM = "setq";
 const char string30[] PROGMEM = "loop";
@@ -4798,6 +4707,7 @@ const char string222[] PROGMEM = "set-text-wrap";
 const char string223[] PROGMEM = "fill-screen";
 const char string224[] PROGMEM = "set-rotation";
 const char string225[] PROGMEM = "invert-display";
+const char string225a[] PROGMEM = "get-key";
 const char string226[] PROGMEM = ":led-builtin";
 const char string227[] PROGMEM = ":high";
 const char string228[] PROGMEM = ":low";
@@ -5327,6 +5237,8 @@ const char doc224[] PROGMEM = "(set-rotation option)\n"
 "Sets the display orientation for subsequent graphics commands; values are 0, 1, 2, or 3.";
 const char doc225[] PROGMEM = "(invert-display boolean)\n"
 "Mirror-images the display.";
+const char doc225a[] PROGMEM = "(get-key)\n"
+"Waits for a key press and returns it as a character.";
 
 // Built-in symbol lookup table
 const tbl_entry_t lookup_table[] PROGMEM = {
@@ -5358,10 +5270,11 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string25, fn_analogread, 0211, doc25 },
   { string26, fn_register, 0212, doc26 },
   { string27, fn_format, 0227, doc27 },
+  { string27a, NULL, 0000, NULL },
   { string28, sp_or, 0307, doc28 },
   { string29, sp_setq, 0327, doc29 },
   { string30, sp_loop, 0307, doc30 },
-  { string31, sp_return, 0307, doc31 },
+  { string31, fn_return, 0101, doc31 },
   { string32, sp_push, 0322, doc32 },
   { string33, sp_pop, 0311, doc33 },
   { string34, sp_incf, 0312, doc34 },
@@ -5557,6 +5470,7 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string223, fn_fillscreen, 0201, doc223 },
   { string224, fn_setrotation, 0211, doc224 },
   { string225, fn_invertdisplay, 0211, doc225 },
+  { string225a, fn_getkey, 0200, doc225a },
   { string226, (fn_ptr_type)LED_BUILTIN, 0, NULL },
   { string227, (fn_ptr_type)HIGH, DIGITALWRITE, NULL },
   { string228, (fn_ptr_type)LOW, DIGITALWRITE, NULL },
@@ -5636,8 +5550,10 @@ void testescape () {
 #if defined serialmonitor
   if (Serial.available() && Serial.read() == '~') error2(PSTR("escape!"));
 #endif
-  Wire1.requestFrom(0x55, 1);
-  if (Wire1.available() && Wire1.read() == '@') error2(PSTR("escape!"));
+  if (digitalRead(0) == LOW) {
+    pinMode(0, INPUT_PULLUP); 
+    if (digitalRead(0) == LOW) error2(PSTR("escape!")); // Push Trackball
+  }
 }
 
 bool keywordp (object *obj) {
@@ -6273,28 +6189,31 @@ void PlotChar (uint8_t ch, uint8_t line, uint8_t column) {
  #if defined(gfxsupport)
   uint16_t y = line*Leading;
   uint16_t x = column*6;
-  uint8_t off = (ch & 0x80) ? 0x7 : 0;    // Parenthesis highlight
   ScrollBuf[column][(line+Scroll) % Lines] = ch;
-  ch = (ch & 0x7f);
-  if (off) {
-    tft.drawChar(x, y, ch, COLOR_BLACK, COLOR_GREEN, 1);
+  if (ch & 0x80) {
+    tft.drawChar(x, y, ch & 0x7f, COLOR_BLACK, COLOR_GREEN, 1);
   } else {
-    tft.drawChar(x, y, ch, COLOR_WHITE, COLOR_BLACK, 1);
+    tft.drawChar(x, y, ch & 0x7f, COLOR_WHITE, COLOR_BLACK, 1);
   }
 #endif
 }
 
-
 // Clears the bottom line and then scrolls the display up by one line
 void ScrollDisplay () {
- #if defined(gfxsupport)
+  #if defined(gfxsupport)
   tft.fillRect(0, 240-Leading, 320, 10, COLOR_BLACK);
   for (uint8_t x = 0; x < Columns; x++) {
     char c = ScrollBuf[x][Scroll];
     for (uint8_t y = 0; y < Lines-1; y++) {
       char c2 = ScrollBuf[x][(y+Scroll+1) % Lines];
-      if (c != c2) tft.drawChar(x*6, y*Leading, c2, COLOR_WHITE, COLOR_BLACK, 1);
-      c = c2;
+      if (c != c2) {
+        if (c2 & 0x80) {
+          tft.drawChar(x*6, y*Leading, c2 & 0x7f, COLOR_BLACK, COLOR_GREEN, 1);
+        } else {
+          tft.drawChar(x*6, y*Leading, c2 & 0x7f, COLOR_WHITE, COLOR_BLACK, 1);
+        }
+        c = c2;
+      }
     }
   }
   // Tidy up graphics
@@ -6302,13 +6221,17 @@ void ScrollDisplay () {
   tft.fillRect(318, 0, 3, 240, COLOR_BLACK);
   for (int x=0; x<Columns; x++) ScrollBuf[x][Scroll] = 0;
   Scroll = (Scroll + 1) % Lines;
- #endif
+  #endif
 }
+
+const char VT = 11; // Vertical tab
+const char BEEP = 7;
 
 // Prints a character to display, with cursor, handling control characters
 void Display (char c) {
   #if defined(gfxsupport)
   static uint8_t line = 0, column = 0;
+  static bool invert = false;
   // These characters don't affect the cursor
   if (c == 8) {                    // Backspace
     //PlotChar(' ', line+Scroll, Column); //hide cursor?
@@ -6331,6 +6254,8 @@ void Display (char c) {
     else PlotChar(')' | 0x80, line, column);
     return;
   }
+  if (c == STX) { invert = true; return; }
+  if (c == ETX) { invert = false; return; }
   // Hide cursor
   PlotChar(' ', line, column);
   if (c == 0x7F) {                 // DEL
@@ -6338,7 +6263,7 @@ void Display (char c) {
       line--; column = LastColumn;
     } else column--;
   } else if ((c & 0x7f) >= 32) {   // Normal character
-    PlotChar(c, line, column++);
+    if (invert) PlotChar(c | 0x80, line, column++); else PlotChar(c, line, column++);
     if (column > LastColumn) {
       column = 0;
       if (line == LastLine) ScrollDisplay(); else line++;
@@ -6354,7 +6279,9 @@ void Display (char c) {
   } else if (c == '\n') {          // Newline
     column = 0;
     if (line == LastLine) ScrollDisplay(); else line++;
-  } else if (c == 7) tone(0, 440, 125); // Beep
+  } else if (c == VT) {
+    column = 0; Scroll = 0; line = LastLine - 2;
+  } else if (c == BEEP) tone(0, 440, 125); // Beep
   // Show cursor
   PlotChar(Cursor, line, column);
  #endif
@@ -6419,61 +6346,6 @@ void ProcessKey (char c) {
 
 // Setup
 
-void initBoard()
-{
-    pinMode(TDECK_SDCARD_CS, OUTPUT);
-    pinMode(TDECK_LORA_CS, OUTPUT);
-    pinMode(TDECK_TFT_CS, OUTPUT);
-
-    digitalWrite(TDECK_SDCARD_CS, HIGH);
-    digitalWrite(TDECK_LORA_CS, HIGH);
-    digitalWrite(TDECK_TFT_CS, HIGH);
-
-    pinMode(TDECK_SPI_MISO, INPUT_PULLUP);
-    SPI.begin(TDECK_SPI_SCK, TDECK_SPI_MISO, TDECK_SPI_MOSI); //SD
-}
-
-void sd_begin(){
-    digitalWrite(TDECK_SDCARD_CS, HIGH);
-    digitalWrite(TDECK_LORA_CS, HIGH);
-    digitalWrite(TDECK_TFT_CS, HIGH);
-
-    SD.begin(TDECK_SDCARD_CS, SPI, 800000U);
-};
-
-bool initSD(){
-    digitalWrite(TDECK_SDCARD_CS, HIGH);
-    digitalWrite(TDECK_LORA_CS, HIGH);
-    digitalWrite(TDECK_TFT_CS, HIGH);
-
-    if (SD.begin(TDECK_SDCARD_CS, SPI, 800000U)) {
-        uint8_t cardType = SD.cardType();
-        if (cardType == CARD_NONE) {
-            Serial.println("No SD_MMC card attached");
-            return false;
-        } else {
-            Serial.print("SD_MMC Card Type: ");
-            if (cardType == CARD_MMC) {
-                Serial.println("MMC");
-            } else if (cardType == CARD_SD) {
-                Serial.println("SDSC");
-            } else if (cardType == CARD_SDHC) {
-                Serial.println("SDHC");
-            } else {
-                Serial.println("UNKNOWN");
-            }
-            uint32_t cardSize = SD.cardSize() / (1024 * 1024);
-            uint32_t cardTotal = SD.totalBytes() / (1024 * 1024);
-            uint32_t cardUsed = SD.usedBytes() / (1024 * 1024);
-            Serial.printf("SD Card Size: %lu MB\n", cardSize);
-            Serial.printf("Total space: %lu MB\n",  cardTotal);
-            Serial.printf("Used space: %lu MB\n",   cardUsed);
-            return true;
-        }
-    }
-    return false;
-}
-
 void initBoard () {
   pinMode(TDECK_SDCARD_CS, OUTPUT);
   pinMode(TDECK_LORA_CS, OUTPUT);
@@ -6483,37 +6355,6 @@ void initBoard () {
   digitalWrite(TDECK_TFT_CS, HIGH);
   pinMode(TDECK_SPI_MISO, INPUT_PULLUP);
   SPI.begin(TDECK_SPI_SCK, TDECK_SPI_MISO, TDECK_SPI_MOSI); //SD
-  /*
-  i2s_config_t i2s_config = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = 16000,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format = I2S_CHANNEL_FMT_ALL_LEFT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 8,
-    .dma_buf_len = 64,
-    .use_apll = false,
-    .tx_desc_auto_clear = true,
-    .fixed_mclk = 0,
-    .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-    .bits_per_chan = I2S_BITS_PER_CHAN_16BIT,
-    .chan_mask =
-    (i2s_channel_t)(I2S_TDM_ACTIVE_CH0 | I2S_TDM_ACTIVE_CH1 |
-                    I2S_TDM_ACTIVE_CH2 | I2S_TDM_ACTIVE_CH3),
-    .total_chan = 4,
-  };
-  
-  i2s_pin_config_t pin_config = {
-    .mck_io_num = TDECK_ES7210_MCLK,
-    .bck_io_num = TDECK_ES7210_SCK,
-    .ws_io_num = TDECK_ES7210_LRCK,
-    .data_in_num = TDECK_ES7210_DIN,
-  };
-  i2s_driver_install(I2S_CH, &i2s_config, 0, NULL);
-  i2s_set_pin(I2S_CH, &pin_config);
-  i2s_zero_dma_buffer(I2S_CH);
-  */
 }
 
 void sd_begin () {
@@ -6546,20 +6387,17 @@ void initsound () {
 
 // Entry point from the Arduino IDE
 void setup () {
-  #if defined (serialmonitor)
   Serial.begin(9600);
   int start = millis();
   while ((millis() - start) < 5000) { if (Serial) break; }
-  #endif
   initworkspace();
   initenv();
   initsleep();
   initBoard();
   initgfx();
   initkybd();
-  initSD();
   initsound();
-  pfstring(PSTR("uLisp 4.4d "), pserial); pln(pserial);
+  pfstring(PSTR("uLisp 5 "), pserial); pln(pserial);
 }
 
 // Read/Evaluate/Print loop
@@ -6569,7 +6407,7 @@ void repl (object *env) {
     randomSeed(micros());
     gc(NULL, env);
     #if defined(printfreespace)
-    pint(Freespace, pserial);
+    pint(Freespace + 1, pserial);
     #endif
     if (BreakLevel) {
       pfstring(PSTR(" : "), pserial);
