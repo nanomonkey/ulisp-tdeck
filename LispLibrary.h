@@ -107,4 +107,7 @@ const char LispLibrary[] PROGMEM = R"lisplibrary(
            (print line)
            (println (if (eq result nothing) "Error!" result) s)))
        (delay 1000)))))
+
+(defun bat nil (+ 0.2 (* (analogread 4) (/ 6.6 4095.0))))
+
 )lisplibrary";

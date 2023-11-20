@@ -2,6 +2,8 @@
  User Extensions
 */
   
+#include "time.h"
+
 // Definitions
 object *fn_now (object *args, object *env) {
   (void) env;
@@ -163,6 +165,37 @@ object *fn_directoryp(object *arg, object *env) {
 }
 
 
+object *fn_localtime (object *args, object *env){
+  (void) env, (void) args;
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    error2(PSTR("Failed to obtain time"));
+    return nil;
+  } else {
+    object *seconds = number(timeinfo.tm_sec);
+    object *minute = number(timeinfo.tm_min);
+    object *hour = number(timeinfo.tm_hour);
+    object *day = number(timeinfo.tm_mday);
+    object *month = number(timeinfo.tm_mon + 1);
+    object *year = number(timeinfo.tm_year + 1900);
+    return cons(year, cons(month, cons(day, cons(hour, cons(minute, cons(seconds, NULL))))));
+  }
+}
+
+object *fn_ntp (object *args, object *env) {
+  char *ntpServer = "pool.ntp.org";
+  unsigned long gmtOffset_sec = (unsigned long)(checkinteger(first(args)));
+  int daylightOffset_sec =  (unsigned long)(checkinteger(second(args)))*3600;
+  if (WiFi.status() == WL_CONNECTED) {
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    return fn_localtime(NULL, env);
+  } else {
+    error2(PSTR("Wifi not enabled"));
+    return nil;
+  }
+}
+
+
 // Symbol names
 const char stringnow[] PROGMEM = "now";
 const char string_sym_def[] PROGMEM = "symbol-def";
@@ -172,6 +205,8 @@ const char string_make_dir[] PROGMEM = "make-directory";
 const char string_remove_dir[] PROGMEM = "remove-directory";
 const char string_list_dir[] PROGMEM = "list-dir";
 const char string_directoryp[] PROGMEM = "directoryp";
+const char string_ntp[] PROGMEM = "ntp";
+const char string_localtime[] PROGMEM = "local-time";
 
 // Documentation strings
 const char docnow[] PROGMEM = "(now [hh mm ss])\n"
@@ -194,6 +229,11 @@ const char doc_list_dir[] PROGMEM = "list the contents of a given directory";
 
 const char doc_directoryp[] PROGMEM = "test whether a file is a directory";
 
+const char doc_ntp[] PROGMEM = "(ntp offset daylight_savings)\n" 
+"Connect to ntp server and set internal timeclock.\n Needs to be connected to wifi.";
+
+const char doc_localtime[] PROGMEM = "Returns (year, month, day, hour, minute, seconds)";
+
 // Symbol lookup table
 const tbl_entry_t lookup_table2[] PROGMEM = {
   { stringnow, fn_now, 0203, docnow },
@@ -203,7 +243,9 @@ const tbl_entry_t lookup_table2[] PROGMEM = {
   { string_make_dir, fn_make_dir, 0211, doc_make_dir },
   { string_remove_dir, fn_remove_dir, 0211, doc_remove_dir },
   { string_list_dir, fn_list_dir, 0201, doc_list_dir },
-  { string_directoryp, fn_directoryp, 0211, doc_directoryp }
+  { string_directoryp, fn_directoryp, 0211, doc_directoryp },
+  { string_ntp, fn_ntp, 0222, doc_ntp },
+  { string_localtime, fn_localtime, 0200, doc_localtime }
 };
 
 // Table cross-reference functions
