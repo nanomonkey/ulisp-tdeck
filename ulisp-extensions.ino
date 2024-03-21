@@ -195,6 +195,53 @@ object *fn_ntp (object *args, object *env) {
   }
 }
 
+object* fn_gensym (object* args, object* env) {
+    unsigned int counter = 0;
+    char buffer[BUFFERSIZE+10];
+    char prefix[BUFFERSIZE];
+    if (args != NULL) {
+        cstring(checkstring(first(args)), prefix, sizeof(prefix));
+    } else {
+        strcpy(prefix, "$gensym");
+    }
+    object* result;
+    do {
+        snprintf(buffer, sizeof(buffer), "%s%u", prefix, counter);
+        result = buftosymbol(buffer);
+        counter++;
+    } while (boundp(result, env));
+    return result;
+}
+
+const char stringgensym[] PROGMEM = "gensym";
+const char docgensym[] PROGMEM = "(gensym [prefix])\n"
+"Returns a new symbol, optionally beginning with prefix (which must be a string).\n"
+"The returned symbol is guaranteed to not conflict with any existing bound symbol.";
+
+object* fn_intern (object* args, object* env) {
+    char b[BUFFERSIZE];
+    return buftosymbol(cstring(checkstring(first(args)), b, BUFFERSIZE));
+}
+
+const char stringintern[] PROGMEM = "intern";
+const char docintern[] PROGMEM = "(intern string)\n"
+"Creates a symbol, with the same name as the string.\n"
+"Unlike gensym, the returned symbol is not modified from the string in any way,\n"
+"and so it may be bound.";
+
+object* fn_sizeof (object* args, object* env) {
+    int count = 0;
+    markobject(first(args));
+    for (int i=0; i<WORKSPACESIZE; i++) {
+        object* obj = &Workspace[i];
+        if (marked(obj)) {
+            unmark(obj);
+            count++;
+        }
+    }
+    return number(count);
+}
+
 
 // Symbol names
 const char stringnow[] PROGMEM = "now";
@@ -207,6 +254,8 @@ const char string_list_dir[] PROGMEM = "list-dir";
 const char string_directoryp[] PROGMEM = "directoryp";
 const char string_ntp[] PROGMEM = "ntp";
 const char string_localtime[] PROGMEM = "local-time";
+const char stringsizeof[] PROGMEM = "sizeof";
+
 
 // Documentation strings
 const char docnow[] PROGMEM = "(now [hh mm ss])\n"
@@ -234,6 +283,9 @@ const char doc_ntp[] PROGMEM = "(ntp offset daylight_savings)\n"
 
 const char doc_localtime[] PROGMEM = "Returns (year, month, day, hour, minute, seconds)";
 
+const char docsizeof[] PROGMEM = "(sizeof obj)\n"
+"Returns the number of Lisp cells the object occupies in memory.";
+
 // Symbol lookup table
 const tbl_entry_t lookup_table2[] PROGMEM = {
   { stringnow, fn_now, 0203, docnow },
@@ -245,7 +297,10 @@ const tbl_entry_t lookup_table2[] PROGMEM = {
   { string_list_dir, fn_list_dir, 0201, doc_list_dir },
   { string_directoryp, fn_directoryp, 0211, doc_directoryp },
   { string_ntp, fn_ntp, 0222, doc_ntp },
-  { string_localtime, fn_localtime, 0200, doc_localtime }
+  { string_localtime, fn_localtime, 0200, doc_localtime },
+  { stringgensym, fn_gensym, 0201, docgensym },
+  { stringintern, fn_intern, 0211, docintern },
+  { stringsizeof, fn_sizeof, 0211, docsizeof }
 };
 
 // Table cross-reference functions

@@ -71,6 +71,8 @@ TFT_eSPI tft;
 #error "Board not supported!"
 #endif
 
+#define MAX_STACK 4000
+
 // C Macros
 
 #define nil                NULL
@@ -116,7 +118,7 @@ TFT_eSPI tft;
 
 const int TRACEMAX = 3; // Number of traced functions
 enum type { ZZERO=0, SYMBOL=2, CODE=4, NUMBER=6, STREAM=8, CHARACTER=10, FLOAT=12, ARRAY=14, STRING=16, PAIR=18 };  // ARRAY STRING and PAIR must be last
-enum token { UNUSED, BRA, KET, QUO, DOT };
+enum token { UNUSED, BRA, KET, QUO, DOT, BACKQUO, UNQUO, UNSPLICE };
 enum stream { SERIALSTREAM, I2CSTREAM, SPISTREAM, SDSTREAM, WIFISTREAM, STRINGSTREAM, GFXSTREAM };
 enum fntypes_t { OTHER_FORMS, TAIL_FORMS, FUNCTIONS, SPECIAL_FORMS };
 
@@ -167,9 +169,7 @@ typedef void (*pfun_t)(char);
 
 typedef uint16_t builtin_t;
 
-enum builtins: builtin_t { NIL, TEE, NOTHING, OPTIONAL, INITIALELEMENT, ELEMENTTYPE, BIT, AMPREST, LAMBDA, LET, LETSTAR,
-CLOSURE, PSTAR, QUOTE, DEFUN, DEFVAR, CAR, FIRST, CDR, REST, NTH, AREF, STRINGFN, PINMODE, DIGITALWRITE,
-ANALOGREAD, REGISTER, FORMAT, HIGHLIGHT,
+enum builtins: builtin_t { NIL, TEE, NOTHING, OPTIONAL, INITIALELEMENT, ELEMENTTYPE, BIT, AMPREST, LAMBDA, LET, LETSTAR, CLOSURE, PSTAR, QUOTE,  CONS, APPEND, BACKQUOTE, UNQUOTE, UNQUOTE_SPLICING, DEFUN, DEFVAR, DEFMACRO, MACRO, CAR, FIRST, CDR, REST, NTH, AREF, STRINGFN, PINMODE, DIGITALWRITE, ANALOGREAD, REGISTER, FORMAT, HIGHLIGHT,
  };
 
 // Global variables
@@ -194,6 +194,7 @@ uint8_t PrintCount = 0;
 uint8_t BreakLevel = 0;
 char LastChar = 0;
 char LastPrint = 0;
+void* StackBottom;
 
 // Flags
 enum flag { PRINTREADABLY, RETURNFLAG, ESCAPE, EXITEDITOR, LIBRARYLOADED, NOESC, NOECHO, MUFFLEERRORS };
@@ -392,6 +393,15 @@ object *newstring () {
   ptr->type = STRING;
   ptr->chars = 0;
   return ptr;
+}
+
+/*
+    buftosymbol - checks the characters in buffer and calls symbol() or internlong() to make it a symbol.
+*/
+object *buftosymbol (char *b) {
+    int l = strlen(b);
+    if (l <= 6 && valid40(b)) return symbol(twist(pack40(b)));
+    else return internlong(b);
 }
 
 // Garbage collection
@@ -1568,8 +1578,10 @@ object *apply (object *function, object *args, object *env) {
 }
 
 // In-place operations
+//bool is_macro_call (object*, object*); // forward-declaration
 
 object **place (object *args, object *env, int *bit) {
+  PLACE:
   *bit = -1;
   if (atom(args)) return &cdr(findvalue(args, env));
   object* function = first(args);
@@ -1601,6 +1613,10 @@ object **place (object *args, object *env, int *bit) {
       if (!arrayp(array)) error(PSTR("first argument is not an array"), array);
       return getarray(array, cddr(args), env, bit);
     }
+  }
+  else if (is_macro_call(args, env)) {
+    function = eval(function, env);
+    goto PLACE;
   }
   error2(PSTR("illegal place"));
   return nil;
@@ -2046,6 +2062,21 @@ object *sp_defvar (object *args, object *env) {
   if (pair != NULL) cdr(pair) = val;
   else push(cons(var, val), GlobalEnv);
   return var;
+}
+
+/* 
+  (defmacro name (parameters) form*)
+  Defines a syntantic macro.
+*/
+object* sp_defmacro (object* args, object* env) {
+    (void) env;
+    object* var = first(args);
+    if (!symbolp(var)) error(notasymbol, var);
+    object* val = cons(bsymbol(MACRO), cdr(args));
+    object* pair = value(var->name, GlobalEnv);
+    if (pair != NULL) cdr(pair) = val;
+    else push(cons(var, val), GlobalEnv);
+    return var;
 }
 
 object *sp_setq (object *args, object *env) {
@@ -2765,6 +2796,18 @@ object *fn_reverse (object *args, object *env) {
     list = cdr(list);
   }
   return result;
+}
+
+// BACKQUOTE support
+// see https://github.com/kanaka/mal/blob/master/process/guide.md#step-7-quoting
+// and https://github.com/kanaka/mal/issues/103#issuecomment-159047401
+
+object* reverse (object* what) {
+    object* result = NULL;
+    for (; what != NULL; what = cdr(what)) {
+        push(car(what), result);
+    }
+    return result;
 }
 
 object *fn_nth (object *args, object *env) {
@@ -4478,6 +4521,106 @@ object *fn_getkey (object *args, object *env) {
   return character(getKey());
 }
 
+object* process_backquote (object* arg, size_t level = 0) {
+    // "If ast is a map or a symbol, return a list containing: the "quote" symbol, then ast."
+    if (arg == NULL || atom(arg)) return quote(arg);
+    // "If ast is a list starting with the "unquote" symbol, return its second element."
+    if (listp(arg) && symbolp(first(arg))) {
+        switch (builtin(first(arg)->name)) {
+            case BACKQUOTE: return process_backquote(second(arg), level + 1);
+            case UNQUOTE: return level == 0 ? second(arg) : process_backquote(second(arg), level - 1);
+            default: break;
+        }
+    }
+    // "If ast is a list failing previous test, the result will be a list populated by the following process."
+    // "The result is initially an empty list. Iterate over each element elt of ast in reverse order:"
+    object* result = NULL;
+    object* rev_arg = reverse(arg);
+    for (; rev_arg != NULL; rev_arg = cdr(rev_arg)) {
+        object* element = car(rev_arg);
+        // "If elt is a list starting with the "splice-unquote" symbol,
+        // replace the current result with a list containing: the "concat" symbol,
+        // the second element of elt, then the previous result."
+        if (listp(element) && symbolp(first(element)) && builtin(first(element)->name) == UNQUOTE_SPLICING) {
+            object* x = second(element);
+            if (level > 0) x = process_backquote(x, level - 1);
+            result = cons(bsymbol(APPEND), cons(x, cons(result, nil)));
+        }
+        // "Else replace the current result with a list containing:
+        // the "cons" symbol, the result of calling quasiquote with
+        // elt as argument, then the previous result."
+        else result = cons(bsymbol(CONS), cons(process_backquote(element, level), cons(result, nil)));
+    }
+    return result;
+}
+
+// "Add the quasiquote special form. This form does the same than quasiquoteexpand,
+// but evaluates the result in the current environment before returning it, either by
+// recursively calling EVAL with the result and env, or by assigning ast with the result
+// and continuing execution at the top of the loop (TCO)."
+object* tf_backquote (object* args, object* env) {
+    object* result = process_backquote(first(args));
+    // Tail call
+    return result;
+}
+
+object* bq_invalid (object* args, object* env) {
+    (void)args, (void)env;
+    error2(PSTR("not valid outside backquote"));
+    // unreachable
+    return NULL;
+}
+
+
+bool is_macro_call (object* form, object* env) {
+    if (form == nil) return false;
+    CHECK:
+    if (symbolp(car(form))) {
+        object* pair = findpair(car(form), env);
+        if (pair == NULL) return false;
+        form = cons(cdr(pair), cdr(form));
+        goto CHECK;
+    }
+    if (!consp(form)) return false;
+    object* lambda = first(form);
+    if (!consp(lambda)) return false;
+    return isbuiltin(first(lambda), MACRO);
+}
+
+object* macroexpand1 (object* form, object* env, bool* done) {
+    if (!is_macro_call(form, env)) {
+        *done = true;
+        return form;
+    }
+    while (symbolp(car(form))) form = cons(cdr(findvalue(car(form), env)), cdr(form));
+    push(form, GCStack);
+    form = closure(0, sym(NIL), car(form), cdr(form), &env);
+    object* result = eval(form, env);
+    pop(GCStack);
+    return result;
+}
+
+object* fn_macroexpand1 (object* args, object* env) {
+    bool dummy;
+    return macroexpand1(first(args), env, &dummy);
+}
+
+object* macroexpand (object* form, object* env) {
+    bool done = false;
+    push(form, GCStack);
+    while (!done) {
+        form = macroexpand1(form, env, &done);
+        car(GCStack) = form;
+    }
+    pop(GCStack);
+    return form;
+}
+
+object* fn_macroexpand (object* args, object* env) {
+    return macroexpand(first(args), env);
+}
+
+
 // Built-in symbol names
 const char string0[] PROGMEM = "nil";
 const char string1[] PROGMEM = "t";
@@ -4495,6 +4638,10 @@ const char string12[] PROGMEM = "*pc*";
 const char string13[] PROGMEM = "quote";
 const char string14[] PROGMEM = "defun";
 const char string15[] PROGMEM = "defvar";
+const char stringdefmacro[] PROGMEM = "defmacro";
+const char stringmacro[] PROGMEM = "macro";
+const char stringmacroexpand1[] PROGMEM = "macroexpand-1";
+const char stringmacroexpand[] PROGMEM = "macroexpand";
 const char string16[] PROGMEM = "car";
 const char string17[] PROGMEM = "first";
 const char string18[] PROGMEM = "cdr";
@@ -4715,6 +4862,9 @@ const char string229[] PROGMEM = ":input";
 const char string230[] PROGMEM = ":input-pullup";
 const char string231[] PROGMEM = ":input-pulldown";
 const char string232[] PROGMEM = ":output";
+const char stringbackquote[] PROGMEM = "backquote";
+const char stringunquote[] PROGMEM = "unquote";
+const char stringuqsplicing[] PROGMEM = "unquote-splicing";
 
 // Documentation strings
 const char doc0[] PROGMEM = "nil\n"
@@ -5239,6 +5389,24 @@ const char doc225[] PROGMEM = "(invert-display boolean)\n"
 "Mirror-images the display.";
 const char doc225a[] PROGMEM = "(get-key)\n"
 "Waits for a key press and returns it as a character.";
+const char docmacro[] PROGMEM = "(macro (parameter*) form*)\n"
+"Creates an unnamed lambda-macro with parameters. The body is evaluated with the parameters as local variables\n"
+"whose initial values are defined by the values of the forms after the macro form;\n"
+"the resultant Lisp code returned is then evaluated again, this time in the scope of where the macro was called.";
+const char docdefmacro[] PROGMEM = "(defmacro name (parameters) form*)\n"
+"Defines a syntactic macro.";
+const char docmacroexpand1[] PROGMEM = "(macroexpand-1 'form)\n"
+"If the form represents a call to a macro, expands the macro once and returns the expanded code.";
+const char docmacroexpand[] PROGMEM = "(macroexpand 'form)\n"
+"Repeatedly applies (macroexpand-1) until the form no longer represents a call to a macro,\n"
+"then returns the new form.";
+const char docbackquote[] PROGMEM = "(backquote form) or `form\n"
+"Expands the unquotes present in the form as a syntactic template. Most commonly used in macros.";
+const char docunquote[] PROGMEM = "(unquote form) or ,form\n"
+"Marks a form to be evaluated and the value inserted when (backquote) expands the template.";
+const char docunquotesplicing[] PROGMEM = "(unquote-splicing form) or ,@form\n"
+"Marks a form to be evaluated and the value spliced in when (backquote) expands the template.\n"
+"If the value returned when evaluating form is not a proper list (backquote) will bork very badly.";
 
 // Built-in symbol lookup table
 const tbl_entry_t lookup_table[] PROGMEM = {
@@ -5257,6 +5425,9 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string12, NULL, 0007, NULL },
   { string13, sp_quote, 0311, NULL },
   { string14, sp_defun, 0327, doc14 },
+  { stringbackquote, tf_backquote, 0211, docbackquote },
+  { stringunquote, bq_invalid, 0311, docunquote },
+  { stringuqsplicing, bq_invalid, 0311, docunquotesplicing },
   { string15, sp_defvar, 0313, doc15 },
   { string16, fn_car, 0211, doc16 },
   { string17, fn_car, 0211, NULL },
@@ -5478,6 +5649,10 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string230, (fn_ptr_type)INPUT_PULLUP, PINMODE, NULL },
   { string231, (fn_ptr_type)INPUT_PULLDOWN, PINMODE, NULL },
   { string232, (fn_ptr_type)OUTPUT, PINMODE, NULL },
+  { stringdefmacro, sp_defmacro, 0327, docdefmacro },
+  { stringmacro, NULL, 0317, docmacro },
+  { stringmacroexpand1, fn_macroexpand1, 0211, docmacroexpand1 },
+  { stringmacroexpand, fn_macroexpand, 0211, docmacroexpand }
 };
 
 #if !defined(extensions)
@@ -5576,6 +5751,9 @@ object *eval (object *form, object *env) {
   if (tstflag(ESCAPE)) { clrflag(ESCAPE); error2(PSTR("escape!"));}
   if (!tstflag(NOESC)) testescape();
 
+ // Stack overflow check
+  if (abs(static_cast<int*>(StackBottom) - &TC) > MAX_STACK) error(PSTR("C stack overflow"), form);
+
   if (form == NULL) return nil;
 
   if (form->type >= NUMBER && form->type <= STRING) return form;
@@ -5590,6 +5768,9 @@ object *eval (object *form, object *env) {
     Context = NIL;
     error(PSTR("undefined"), form);
   }
+
+  // Expand macros
+  form = macroexpand(form, env);
 
   // It's a list
   object *function = car(form);
@@ -6036,7 +6217,16 @@ object *nextitem (gfun_t gfun) {
   if (ch == ')') return (object *)KET;
   if (ch == '(') return (object *)BRA;
   if (ch == '\'') return (object *)QUO;
-
+  if (ch == '`') return (object*)BACKQUO;
+  if (ch == '@') return (object*)UNSPLICE;
+  if (ch == ',') {
+    ch = gfun();
+    if (ch == '@') return (object *)UNSPLICE;
+    else {
+      LastChar = ch;
+      return (object *)UNQUO;
+    }
+  }
   // Parse string
   if (ch == '"') return readstring('"', true, gfun);
 
@@ -6156,9 +6346,20 @@ object *readrest (gfun_t gfun) {
   while (item != (object *)KET) {
     if (item == (object *)BRA) {
       item = readrest(gfun);
-    } else if (item == (object *)QUO) {
+    } 
+    else if (item == (object *)QUO) {
       item = cons(bsymbol(QUOTE), cons(read(gfun), NULL));
-    } else if (item == (object *)DOT) {
+    } 
+    else if (item == (object *)BACKQUO) { 
+      item = cons(bsymbol(BACKQUOTE), cons(read(gfun), NULL));
+    }
+    else if (item == (object *)UNQUO) {
+      item = cons(bsymbol(UNQUOTE), cons(read(gfun), NULL));
+    }
+    else if (item == (object *)UNSPLICE) {
+      item = cons(bsymbol(UNQUOTE_SPLICING), cons(read(gfun), NULL));
+    }
+    else if (item == (object *)DOT) {
       tail->cdr = read(gfun);
       if (readrest(gfun) != NULL) error2(PSTR("malformed list"));
       return head;
@@ -6179,6 +6380,9 @@ object *read (gfun_t gfun) {
   if (item == (object *)BRA) return readrest(gfun);
   if (item == (object *)DOT) return read(gfun);
   if (item == (object *)QUO) return cons(bsymbol(QUOTE), cons(read(gfun), NULL));
+  if (item == (object *)BACKQUO) return cons(bsymbol(BACKQUOTE), cons(read(gfun), NULL));
+  if (item == (object *)UNQUO) return cons(bsymbol(UNQUOTE), cons(read(gfun), NULL));
+  if (item == (object *)UNSPLICE) return cons(bsymbol(UNQUOTE_SPLICING), cons(read(gfun), NULL));
   return item;
 }
 
@@ -6385,11 +6589,14 @@ void initsound () {
   I2S.setAllPins(7, 5, 6, 6, 6); // sckPin, fsPin, sdPin, outSdPin, inSdPin
 }
 
+
 // Entry point from the Arduino IDE
 void setup () {
   Serial.begin(9600);
   int start = millis();
   while ((millis() - start) < 5000) { if (Serial) break; }
+  int foo = 0;
+  StackBottom = &foo;
   initworkspace();
   initenv();
   initsleep();
