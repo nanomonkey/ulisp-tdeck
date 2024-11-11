@@ -83,7 +83,7 @@ const char LispLibrary[] PROGMEM = R"lisplibrary(
    (dolist (f lst)
       (symbol-def f str))))
 
-(defun add-to-package (filename list)
+(defun add-to-package (filename lst)
    (with-sd-card (str filename 1)
      (dolist (f lst)
          (symbol-def f str))))
