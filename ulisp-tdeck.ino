@@ -5,7 +5,7 @@
 */
 
 // Lisp Library
-const char LispLibrary[] = "";
+//const char LispLibrary[] = "";
 
 // Compile options
 
@@ -15,12 +15,12 @@ const char LispLibrary[] = "";
 // #define printgcs
 #define sdcardsupport
 #define gfxsupport
-// #define lisplibrary
-// #define extensions
+#define lisplibrary
+#define extensions
 
 // Includes
 
-// #include "LispLibrary.h"
+#include "LispLibrary.h"
 #include <setjmp.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -52,8 +52,6 @@ const char LispLibrary[] = "";
 #include <Arduino_GFX_Library.h>
 #define GFX_DEV_DEVICE LILYGO_T_DECK
 #define TFT_BACKLITE TDECK_TFT_BACKLIGHT
-#include <TFT_eSPI.h>
-TFT_eSPI        tft;
 
 
 // #define TDECK_I2S_WS        5
@@ -6769,6 +6767,7 @@ void initBoard()
     SPI.begin(TDECK_SPI_SCK, TDECK_SPI_MISO, TDECK_SPI_MOSI); //SD
 }
 
+
 bool initSD()
 {
     digitalWrite(TDECK_SDCARD_CS, HIGH);
@@ -6806,17 +6805,6 @@ bool initSD()
 void initenv () {
   GlobalEnv = NULL;
   tee = bsymbol(TEE);
-}
-
-void initBoard () {
-  pinMode(TDECK_SDCARD_CS, OUTPUT);
-  pinMode(TDECK_LORA_CS, OUTPUT);
-  pinMode(TDECK_TFT_CS, OUTPUT);
-  digitalWrite(TDECK_SDCARD_CS, HIGH);
-  digitalWrite(TDECK_LORA_CS, HIGH);
-  digitalWrite(TDECK_TFT_CS, HIGH);
-  pinMode(TDECK_SPI_MISO, INPUT_PULLUP);
-  SPI.begin(TDECK_SPI_SCK, TDECK_SPI_MISO, TDECK_SPI_MOSI); //SD
 }
 
 void initgfx () {
@@ -6912,7 +6900,6 @@ void loop () {
 
 void ulisperror () {
   // Come here after error
-  #if defined (serialmonitor)
   delay(100); while (Serial.available()) Serial.read();
   clrflag(NOESC); BreakLevel = 0; TraceStart = 0; TraceTop = 0;
   for (int i=0; i<TRACEMAX; i++) TraceDepth[i] = 0;
